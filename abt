@@ -10,28 +10,66 @@ import tempfile
 
 
 logging.basicConfig()
-logger = logging.getLogger('abt')
-logger.setLevel(logging.INFO)
-logger.setLevel(logging.DEBUG)
+_logger = logging.getLogger('abt')
+_logger.setLevel(logging.WARN)
 
+
+# From https://gist.github.com/sampsyo/471779 (https://github.com/sampsyo)
+class _AliasedSubParsersAction(argparse._SubParsersAction):
+
+    class _AliasedPseudoAction(argparse.Action):
+        def __init__(self, name, aliases, help):
+            dest = name
+            if aliases:
+                dest += ' (%s)' % ','.join(aliases)
+            sup = super(_AliasedSubParsersAction._AliasedPseudoAction, self)
+            sup.__init__(option_strings=[], dest=dest, help=help)
+
+    def add_parser(self, name, **kwargs):
+        if 'aliases' in kwargs:
+            aliases = kwargs['aliases']
+            del kwargs['aliases']
+        else:
+            aliases = []
+
+        parser = super(_AliasedSubParsersAction, self).add_parser(name, **kwargs)
+
+        # Make the aliases work.
+        for alias in aliases:
+            self._name_parser_map[alias] = parser
+        # Make the help text reflect them, first removing old help entry.
+        if 'help' in kwargs:
+            help = kwargs.pop('help')
+            self._choices_actions.pop()
+            pseudo_action = self._AliasedPseudoAction(name, aliases, help)
+            self._choices_actions.append(pseudo_action)
+
+        return parser
 
 parser = argparse.ArgumentParser(description='Android Boot Tools')
+parser.register('action', 'parsers', _AliasedSubParsersAction)
+parser.add_argument('-v', '--verbose', action='store_true', help='verbose')
+parser.add_argument('--debug', action='store_true', help='log debug info')
 subparsers = parser.add_subparsers(dest='command', help='command')
 
-get_kernel_parser = subparsers.add_parser('get-kernel', description='Extract kernel file from boot image')
+get_kernel_parser = subparsers.add_parser('get-kernel', aliases=['gk'],
+    description='Extract kernel file from boot image')
 get_kernel_parser.add_argument('boot_img', help='boot.img filename')
 get_kernel_parser.add_argument('kernel_file', help='output kernel file')
 
-get_ramdisk_parser = subparsers.add_parser('get-ramdisk', description='Extract ramdisk directory from boot image')
+get_ramdisk_parser = subparsers.add_parser('get-ramdisk', aliases=['gr'],
+    description='Extract ramdisk directory from boot image')
 get_ramdisk_parser.add_argument('boot_img', help='boot.img filename')
 get_ramdisk_parser.add_argument('ramdisk_dir', help='output ramdisk directory')
 
-put_kernel_parser = subparsers.add_parser('put-kernel', description='Insert kernel file into boot image')
+put_kernel_parser = subparsers.add_parser('put-kernel', aliases=['pk'],
+    description='Insert kernel file into boot image')
 put_kernel_parser.add_argument('boot_img', help='boot.img filename')
 put_kernel_parser.add_argument('kernel_file', help='kernel file')
 put_kernel_parser.add_argument('--out', '-o', help='output boot.img filename (defaults to input filename)', nargs='?')
 
-put_ramdisk_parser = subparsers.add_parser('put-ramdisk', description='Insert ramdisk directory into boot image')
+put_ramdisk_parser = subparsers.add_parser('put-ramdisk', aliases=['pr'],
+    description='Insert ramdisk directory into boot image')
 put_ramdisk_parser.add_argument('boot_img', help='boot.img filename')
 put_ramdisk_parser.add_argument('ramdisk_dir', help='ramdisk directory')
 put_ramdisk_parser.add_argument('--out', '-o', help='output boot.img filename (defaults to input filename)', nargs='?')
@@ -55,7 +93,7 @@ def _tempdir():
 
 
 def _makedirs(path, exist_ok=False):
-    logger.debug('Making directory: {}'.format(path))
+    _logger.debug('Making directory: {}'.format(path))
     if not exist_ok:
         os.makedirs(path)
     else:
@@ -73,14 +111,14 @@ def _run_cmd(cmd, shell=False):
         cmd_text = subprocess.list2cmdline(cmd)
     else:
         cmd_text = cmd
-    logger.debug('Running command: {}'.format(cmd_text))
+    _logger.debug('Running command: {}'.format(cmd_text))
     output = subprocess.check_output(cmd, shell=shell)
-    logger.debug('Command output: {}'.format(output))
+    _logger.debug('Command output: {}'.format(output))
     return output
 
 
 def _copy_file(src, dest):
-    logger.info('Copying {} to {}...'.format(src, dest))
+    _logger.info('Copying {} to {}...'.format(src, dest))
     shutil.copyfile(src, dest)
 
 
@@ -89,7 +127,7 @@ def _unpacked_boot_image(boot_img, out_boot_img=None):
     boot_img = os.path.abspath(boot_img)
     with _tempdir() as tmp_dir:
         with _cd(tmp_dir):
-            logger.info('Extracting {} to {}...'.format(boot_img, tmp_dir))
+            _logger.info('Extracting {} to {}...'.format(boot_img, tmp_dir))
             output = _run_cmd(['unmkbootimg', '-i',  boot_img])
 
             kernel_file = os.path.join(tmp_dir, 'kernel')
@@ -99,7 +137,7 @@ def _unpacked_boot_image(boot_img, out_boot_img=None):
 
         with _cd(tmp_dir):
             if out_boot_img is not None:
-                logger.info('Repacking {} from {}...'.format(out_boot_img, tmp_dir))
+                _logger.info('Repacking {} from {}...'.format(out_boot_img, tmp_dir))
                 index = output.index('\n  mkbootimg ')
                 cmd = output[index+3:]
                 index = cmd.index(' -o ')
@@ -121,7 +159,7 @@ def extract_ramdisk(boot_img, ramdisk_dir):
     with _unpacked_boot_image(boot_img) as (_, cpio_file):
         _makedirs(ramdisk_dir)
         with _cd(ramdisk_dir):
-            logger.info('Extracting cpio {}...'.format(cpio_file))
+            _logger.info('Extracting cpio {}...'.format(cpio_file))
             _run_cmd('gzip -dc {} | cpio -id'.format(cpio_file), shell=True)
 
 
@@ -139,7 +177,7 @@ def insert_ramdisk(in_boot_img, out_boot_img, ramdisk_dir):
     ramdisk_dir = os.path.abspath(ramdisk_dir)
     with _unpacked_boot_image(boot_img, out_boot_img) as (_, cpio_file):
         with _cd(ramdisk_dir):
-            logger.info('Packing {} into {}...'.format(ramdisk_dir, cpio_file))
+            _logger.info('Packing {} into {}...'.format(ramdisk_dir, cpio_file))
             _run_cmd('find . | cpio --create --format=ustar | gzip > {}'.format(cpio_file), shell=True)
 
 
@@ -165,11 +203,19 @@ def _put_ramdisk_main(args):
 
 if __name__ == '__main__':
     args = parser.parse_args()
+    if args.verbose:
+        _logger.setLevel(logging.INFO)
+    if args.debug:
+        _logger.setLevel(logging.DEBUG)
     boot_img = args.boot_img
     func = {
         'get-kernel': _get_kernel_main,
         'get-ramdisk': _get_ramdisk_main,
         'put-kernel': _put_kernel_main,
         'put-ramdisk': _put_ramdisk_main,
+        'gk': _get_kernel_main,
+        'gr': _get_ramdisk_main,
+        'pk': _put_kernel_main,
+        'pr': _put_ramdisk_main,
     }[args.command]
     func(args)
