@@ -10,7 +10,7 @@ import tempfile
 
 
 logging.basicConfig()
-_logger = logging.getLogger('abt')
+_logger = logging.getLogger('abit')
 _logger.setLevel(logging.WARN)
 
 
