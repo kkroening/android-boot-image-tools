@@ -6,6 +6,7 @@ Packing/repacking Android boot images is annoying.  `Android Boot Image Tools` m
 
 Make sure `cpio`, `mkbootimg`, and `unmkbootimg` are on your `$PATH`.
 
+`cpio` seems to be fairly standard and shouldn't require special installation.
 `mkbootimg`/`unmkbootimg` can be found here: https://github.com/pbatard/bootimg-tools
 
 ## Usage
