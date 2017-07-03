@@ -31,5 +31,5 @@ abit put-kernel boot.img kernel [-o boot2.img]
 ### Insert ramdisk dir into boot.img:
 
 ```
-abit put-kernel boot.img ramdisk [-o boot2.img]
+abit put-ramdisk boot.img ramdisk [-o boot2.img]
 ```
