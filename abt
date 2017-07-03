@@ -1,0 +1,175 @@
+#!/usr/bin/env python
+import argparse
+import contextlib
+import errno
+import logging
+import os
+import shutil
+import subprocess
+import tempfile
+
+
+logging.basicConfig()
+logger = logging.getLogger('abt')
+logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
+
+
+parser = argparse.ArgumentParser(description='Android Boot Tools')
+subparsers = parser.add_subparsers(dest='command', help='command')
+
+get_kernel_parser = subparsers.add_parser('get-kernel', description='Extract kernel file from boot image')
+get_kernel_parser.add_argument('boot_img', help='boot.img filename')
+get_kernel_parser.add_argument('kernel_file', help='output kernel file')
+
+get_ramdisk_parser = subparsers.add_parser('get-ramdisk', description='Extract ramdisk directory from boot image')
+get_ramdisk_parser.add_argument('boot_img', help='boot.img filename')
+get_ramdisk_parser.add_argument('ramdisk_dir', help='output ramdisk directory')
+
+put_kernel_parser = subparsers.add_parser('put-kernel', description='Insert kernel file into boot image')
+put_kernel_parser.add_argument('boot_img', help='boot.img filename')
+put_kernel_parser.add_argument('kernel_file', help='kernel file')
+put_kernel_parser.add_argument('--out', '-o', help='output boot.img filename (defaults to input filename)', nargs='?')
+
+put_ramdisk_parser = subparsers.add_parser('put-ramdisk', description='Insert ramdisk directory into boot image')
+put_ramdisk_parser.add_argument('boot_img', help='boot.img filename')
+put_ramdisk_parser.add_argument('ramdisk_dir', help='ramdisk directory')
+put_ramdisk_parser.add_argument('--out', '-o', help='output boot.img filename (defaults to input filename)', nargs='?')
+
+
+@contextlib.contextmanager
+def _cd(newdir):
+    prevdir = os.getcwd()
+    os.chdir(os.path.expanduser(newdir))
+    try:
+        yield
+    finally:
+        os.chdir(prevdir)
+
+
+@contextlib.contextmanager
+def _tempdir():
+    dirpath = tempfile.mkdtemp()
+    yield dirpath
+    shutil.rmtree(dirpath)
+
+
+def _makedirs(path, exist_ok=False):
+    logger.debug('Making directory: {}'.format(path))
+    if not exist_ok:
+        os.makedirs(path)
+    else:
+        try:
+            os.makedirs(path)
+        except OSError as exc:
+            if exc.errno == errno.EEXIST and os.path.isdir(path):
+                pass
+            else:
+                raise
+
+
+def _run_cmd(cmd, shell=False):
+    if isinstance(cmd, (list, tuple)):
+        cmd_text = subprocess.list2cmdline(cmd)
+    else:
+        cmd_text = cmd
+    logger.debug('Running command: {}'.format(cmd_text))
+    output = subprocess.check_output(cmd, shell=shell)
+    logger.debug('Command output: {}'.format(output))
+    return output
+
+
+def _copy_file(src, dest):
+    logger.info('Copying {} to {}...'.format(src, dest))
+    shutil.copyfile(src, dest)
+
+
+@contextlib.contextmanager
+def _unpacked_boot_image(boot_img, out_boot_img=None):
+    boot_img = os.path.abspath(boot_img)
+    with _tempdir() as tmp_dir:
+        with _cd(tmp_dir):
+            logger.info('Extracting {} to {}...'.format(boot_img, tmp_dir))
+            output = _run_cmd(['unmkbootimg', '-i',  boot_img])
+
+            kernel_file = os.path.join(tmp_dir, 'kernel')
+            cpio_file = os.path.join(tmp_dir, 'ramdisk.cpio.gz')
+
+        yield kernel_file, cpio_file
+
+        with _cd(tmp_dir):
+            if out_boot_img is not None:
+                logger.info('Repacking {} from {}...'.format(out_boot_img, tmp_dir))
+                index = output.index('\n  mkbootimg ')
+                cmd = output[index+3:]
+                index = cmd.index(' -o ')
+                cmd = cmd[:index+4]
+                cmd += out_boot_img
+                output = _run_cmd(cmd, shell=True)
+
+
+def extract_kernel(boot_img, kernel_file):
+    boot_img = os.path.abspath(boot_img)
+    kernel_file = os.path.abspath(kernel_file)
+    with _unpacked_boot_image(boot_img) as (src_kernel_file, _):
+        _copy_file(src_kernel_file, kernel_file)
+
+
+def extract_ramdisk(boot_img, ramdisk_dir):
+    boot_img = os.path.abspath(boot_img)
+    ramdisk_dir = os.path.abspath(ramdisk_dir)
+    with _unpacked_boot_image(boot_img) as (_, cpio_file):
+        _makedirs(ramdisk_dir)
+        with _cd(ramdisk_dir):
+            logger.info('Extracting cpio {}...'.format(cpio_file))
+            _run_cmd('gzip -dc {} | cpio -id'.format(cpio_file), shell=True)
+
+
+def insert_kernel(in_boot_img, out_boot_img, kernel_file):
+    in_boot_img = os.path.abspath(in_boot_img)
+    out_boot_img = os.path.abspath(out_boot_img)
+    kernel_file = os.path.abspath(kernel_file)
+    with _unpacked_boot_image(boot_img, out_boot_img) as (dest_kernel_file, _):
+        _copy_file(kernel_file, dest_kernel_file)
+
+
+def insert_ramdisk(in_boot_img, out_boot_img, ramdisk_dir):
+    in_boot_img = os.path.abspath(in_boot_img)
+    out_boot_img = os.path.abspath(out_boot_img)
+    ramdisk_dir = os.path.abspath(ramdisk_dir)
+    with _unpacked_boot_image(boot_img, out_boot_img) as (_, cpio_file):
+        with _cd(ramdisk_dir):
+            logger.info('Packing {} into {}...'.format(ramdisk_dir, cpio_file))
+            _run_cmd('find . | cpio --create --format=ustar | gzip > {}'.format(cpio_file), shell=True)
+
+
+def _get_kernel_main(args):
+    extract_kernel(args.boot_img, args.kernel_file)
+
+
+def _get_ramdisk_main(args):
+    extract_ramdisk(args.boot_img, args.ramdisk_dir)
+
+
+def _put_kernel_main(args):
+    in_boot_img = args.boot_img
+    out_boot_img = args.out or in_boot_img
+    insert_kernel(in_boot_img, out_boot_img, args.kernel_file)
+
+
+def _put_ramdisk_main(args):
+    in_boot_img = args.boot_img
+    out_boot_img = args.out or in_boot_img
+    insert_ramdisk(in_boot_img, out_boot_img, args.ramdisk_dir)
+
+
+if __name__ == '__main__':
+    args = parser.parse_args()
+    boot_img = args.boot_img
+    func = {
+        'get-kernel': _get_kernel_main,
+        'get-ramdisk': _get_ramdisk_main,
+        'put-kernel': _put_kernel_main,
+        'put-ramdisk': _put_ramdisk_main,
+    }[args.command]
+    func(args)
